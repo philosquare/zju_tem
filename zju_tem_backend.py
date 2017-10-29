@@ -4,16 +4,14 @@ import sys
 import json
 import datetime
 import urllib
-import urllib2
-import urlparse
-import cookielib
+# import urllib2
+from urllib.parse import urlparse, urlencode, parse_qs, unquote
+from http.cookiejar import CookieJar
 import logging
 from time import sleep
 from flask import Flask, request, render_template
 from apscheduler.schedulers.background import BackgroundScheduler
 
-reload(sys)
-sys.setdefaultencoding('utf8')
 
 logging.basicConfig(filename='log_tem.log', level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -131,9 +129,9 @@ class ReserveTem(object):
         self.login_url = 'http://cem.ylab.cn/doLogin.action'  # GET or POST
         self.reserve_url = 'http://cem.ylab.cn/user/doReserve.action'  # POST
 
-        self.cookie = cookielib.CookieJar()
-        self.handler = urllib2.HTTPCookieProcessor(self.cookie)
-        self.opener = urllib2.build_opener(self.handler)
+        self.cookie = CookieJar()
+        self.handler = urllib.request.HTTPCookieProcessor(self.cookie)
+        self.opener = urllib.request.build_opener(self.handler)
 
         self.username = ''
         self.password = ''
@@ -151,13 +149,13 @@ class ReserveTem(object):
         self.reserve_data = reserve_data
 
     def login(self):
-        login_data = urllib.urlencode(dict(
+        login_data = urlencode(dict(
             origUrl='',
             origType='',
             rememberMe='false',
             username=self.username,
             password=self.password
-        ))
+        )).encode()
         login_result = self.opener.open(self.login_url, login_data)
         if login_result.geturl() != self.login_url:
             # 重定向则登录成功
@@ -170,25 +168,28 @@ class ReserveTem(object):
     def _reserve(self):
         """must call set_account, set_info and login before this method
 
-        :return: return True if reserve successfully else False
+        :return: 返回一个dict
+                status=True/False 是否预约成功，
+                msg 服务器返回的errorCode 即错误信息
         """
-        location = self.opener.open(self.reserve_url, urllib.urlencode(self.reserve_data)).geturl()
-        result = urlparse.parse_qs(urlparse.urlparse(location).query)
+        post_data = urlencode(self.reserve_data).encode()
+        location = self.opener.open(self.reserve_url, post_data).geturl()
+        result = parse_qs(urlparse(location).query)
         if 'success' in result.get('errorType', [''])[0]:
             # 预约成功
-            return True
+            return dict(status=True, msg='预约成功')
         else:
-            msg = urllib.unquote(urllib.unquote(result.get('errorCode')[0]))
+            msg = unquote(unquote(result.get('errorCode')[0]))
             logging.info(msg)
-            return False
+            return dict(status=False, msg=msg)
 
-    def reserve(self):
-        """reserve once
-
-        :return: return True if reserve successfully else False
-        """
-        self.login()
-        return self._reserve()
+    # def reserve(self):
+    #     """reserve once
+    #
+    #     :return: return True if reserve successfully else False
+    #     """
+    #     self.login()
+    #     return self._reserve()
 
     def keep_reserve(self):
         """reserve many times until success or exceed max try time
@@ -203,13 +204,15 @@ class ReserveTem(object):
         self.login()
         for i in range(Config.TRY_TIME):
             try:
-                if self._reserve():
+                reserve_result = self._reserve()
+                if reserve_result.get('status'):
                     logging.info('reserve success! %s' % log_str)
                     return True
                 else:
-                    logging.info('reserve failed no.%d %s' % (i + 1, log_str))
-            except urllib2.URLError as e:
-                logging.exception(e)
+                    logging.info('reserve failed no.%d, error message:%s %s' % (
+                        i + 1, reserve_result.get('msg'), log_str))
+            # except urllib.URLError as e:
+            #     logging.exception(e)
             except Exception as e:
                 logging.exception(e)
             sleep(Config.INTERVAL)
