@@ -1,4 +1,4 @@
-import config
+from config import config
 from apscheduler.schedulers.background import BackgroundScheduler
 
 
@@ -9,7 +9,7 @@ class SchedulerHandler(object):
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = object.__new__(cls)
-            cls.scheduler.add_jobstore('sqlalchemy', url='sqlite:///jobs.sqlite')
+            cls.scheduler.add_jobstore('sqlalchemy', url=config.SCHEDULER_STORE_URL)
         return cls._instance
 
     def start(self):
@@ -23,6 +23,7 @@ class SchedulerHandler(object):
         if username == config.ADMIN_USERNAME:
             jobs = all_jobs
         else:
+            # TODO: 把job_id添加到用户下存储
             jobs = []
             for job in all_jobs:
                 if job.kwargs['username'] == username:
@@ -37,8 +38,9 @@ class SchedulerHandler(object):
             return None
 
     def remove_job(self, job_id, username):
-        if self.get_job(job_id, username):
-            self.scheduler.remove_job(job_id)
+        job = self.get_job(job_id, username)
+        if job:
+            job.remove()
             return True
         else:
             return False
@@ -49,4 +51,4 @@ class SchedulerHandler(object):
         else:
             jobs = self.get_jobs(username)
             for job in jobs:
-                self.scheduler.remove_job(job.id)
+                job.remove()

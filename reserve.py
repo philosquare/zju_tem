@@ -1,12 +1,14 @@
 import datetime
 from urllib.request import HTTPCookieProcessor, build_opener
 from urllib.parse import urlparse, urlencode, parse_qs, unquote
+from urllib.error import HTTPError
 from http.cookiejar import CookieJar
 from time import sleep
 
-import config
+from config import config
 import logging
 from scheduler import SchedulerHandler
+from errors import ReserveException
 
 
 class ReserveTime:
@@ -65,6 +67,8 @@ class ReserveTem(object):
         self.scheduler = SchedulerHandler()
 
     def set_account(self, username, password):
+        if not username or not password:
+            raise ReserveException('username and password can not be empty')
         self.username = username
         self.password = password
         self.account_checked = None
@@ -80,7 +84,18 @@ class ReserveTem(object):
             username=self.username,
             password=self.password
         )).encode()
-        login_result = self.opener.open(self.login_url, login_data)
+        # 尝试登录 有可能出现服务器500错误，所以尝试多次
+        for i in range(config.LOGIN_TRY_TIME):
+            try:
+                login_result = self.opener.open(self.login_url, login_data)
+                break
+            except HTTPError as e:
+                logging.warning('HTTPError: login try no.%s failed: %s' % (i + 1, str(e)))
+                if i < config.LOGIN_TRY_TIME - 1:
+                    sleep((i + 1) / 2)
+        else:
+            logging.warning('login failed: exceed max try times')
+            raise e
 
         if login_result.geturl() != self.login_url:
             # 重定向则登录成功
@@ -97,6 +112,10 @@ class ReserveTem(object):
                 status=True/False 是否预约成功，
                 msg 服务器返回的errorCode 即错误信息
         """
+        if self.username == '':
+            raise ReserveException('must set account before reserve')
+        if self.reserve_data == {}:
+            raise ReserveException('must set reserve data before reserve')
         post_data = urlencode(self.reserve_data).encode()
         location = self.opener.open(self.reserve_url, post_data).geturl()
         result = parse_qs(urlparse(location).query)
@@ -104,7 +123,11 @@ class ReserveTem(object):
             # 预约成功
             return dict(status=True, msg='预约成功')
         else:
-            msg = unquote(unquote(result.get('errorCode')[0]))
+            msg = ''
+            try:
+                msg = unquote(unquote(result.get('errorCode')[0]))
+            except TypeError as e:
+                logging.exception(e)
             logging.info(msg)
             return dict(status=False, msg=msg)
 
@@ -113,12 +136,20 @@ class ReserveTem(object):
 
         :return: return True if reserve successfully else False
         """
+
+        try:
+            self.login()
+        except HTTPError as e:
+            return False
+        except Exception as e:
+            logging.exception(e)
+            return False
+
         log_str = 'reserve date: %s time: %s-%s' % (
                   self.reserve_data['reserveDate'],
                   self.reserve_data['reserveStartTime'],
                   self.reserve_data['reserveEndTime'])
 
-        self.login()
         for i in range(config.TRY_TIME):
             try:
                 reserve_result = self._reserve()
@@ -130,18 +161,31 @@ class ReserveTem(object):
                         i + 1, reserve_result.get('msg'), log_str))
             except Exception as e:
                 logging.exception(e)
-            sleep(config.INTERVAL)
+            if i < config.TRY_TIME - 1:
+                sleep(config.INTERVAL)
+        else:
+            logging.warning('超过最大尝试次数，预约失败！%s' % log_str)
         return False
 
     def set_job(self, reserve_time):
-        """start reserve at `reserve_time`
+        """设置预约定时任务
 
-        must set reserve_info by calling `set_info()` before
+        必须先调用`set_account()`以及`set_info()`，设置好账户和预约信息
 
-        :param datetime.datetime reserve_time: format: '%Y-%m-%d %H:%M:%S'
-        :return: apscheduler.job.Job instance
+        :param datetime.datetime reserve_time: 预约触发时间
+        :return: apscheduler.job.Job job: apscheduler的job对象
         """
-        if self.login():
+        if not self.username:
+            raise ReserveException('must set account before set job')
+        if self.reserve_data == {}:
+            raise ReserveException('must set reserve data before set job')
+        if config.debug:
+            checked = True
+        else:
+            if self.account_checked is None:
+                self.login()
+            checked = self.account_checked
+        if checked:
             job = self.scheduler.add_job(keep_reserve_job, 'date', run_date=reserve_time, kwargs=dict(
                 username=self.username, password=self.password, reserve_data=self.reserve_data))
             return job

@@ -1,10 +1,6 @@
 from resources import instruments
 
 
-class InstrumentException(Exception):
-    pass
-
-
 class Instrument(object):
     class OneInstrument(object):
         """一个OneInstrument实例表示一个仪器
