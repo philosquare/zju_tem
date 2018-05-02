@@ -1,3 +1,4 @@
+from errors import InstrumentException
 from resources import instruments
 
 
